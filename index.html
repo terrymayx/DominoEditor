@@ -3,11 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Domino Physics Creator V24.4</title>
+<title>Domino Physics Creator V24.5</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
 <script>
-// V24.4: run contact solving at <= 8.33 ms steps. Combined with the temporary
-// lower-edge pivot, this prevents the rare one-frame corner penetration seen in recordings.
+// V24.5 keeps the 120 Hz anti-penetration solver introduced in V24.4.
 (() => {
   const originalUpdate = Matter.Engine.update;
   Matter.Engine.update = function(engine, delta = 1000 / 60, correction) {
@@ -26,14 +25,14 @@
 </head>
 <body>
 <div id="toolbar" class="panel">
-  <div class="row"><span id="modeBadge" class="badge">编辑模式</span><b>Domino Physics Creator V24.4</b><span class="small">底边支点 + 120Hz 防飞版</span></div>
+  <div class="row"><span id="modeBadge" class="badge">编辑模式</span><b>Domino Physics Creator V24.5</b><span class="small">牌重量 / 重力 + 底边支点 + 120Hz</span></div>
   <div class="row">
     <button data-add="ball">⚪ 球</button><button data-add="domino">▯ 多米诺</button><button data-add="box">□ 木箱</button><button data-add="ramp">／ 斜坡</button><span class="sep"></span>
     <button data-add="spring">〽 弹簧</button><button data-add="piston">⇥ 活塞</button><button data-add="gear">⚙ 齿轮</button><button data-add="magnet">🧲 磁铁</button><button data-add="wind">➜ 风场</button><button data-add="water">≈ 水流</button><button data-add="ice">▱ 冰面</button>
   </div>
   <div class="row">
     <button data-path="free" class="warn">✎ 自由铺牌</button><button data-path="line">直线</button><button data-path="circle">圆形</button><button data-path="spiral">螺旋</button><button data-path="none">关闭路径</button><span class="sep"></span>
-    <button id="runBtn" class="primary">▶ 运行</button><button id="pushBtn" class="good">推第一块</button><button id="stopBtn">■ 停止</button><button id="demoBtn" class="good">载入 V24.4 测试场景</button>
+    <button id="runBtn" class="primary">▶ 运行</button><button id="pushBtn" class="good">推第一块</button><button id="stopBtn">■ 停止</button><button id="demoBtn" class="good">载入 V24.5 测试场景</button>
   </div>
   <div class="row">
     <button id="undoBtn">↶ 撤销</button><button id="redoBtn">↷ 重做</button><button id="cameraBtn">⌂ 重置镜头</button><span class="sep"></span><button id="saveBtn">保存</button><button id="loadBtn">读取</button><button id="exportBtn">导出 JSON</button>
@@ -41,7 +40,7 @@
 </div>
 
 <div id="right" class="panel">
-  <div class="section"><h3>V24.4 集成状态</h3><div id="message" class="hint">正在加载底边支点防飞物理…</div></div>
+  <div class="section"><h3>V24.5 集成状态</h3><div id="message" class="hint">正在加载牌重量 / 重力物理…</div></div>
 
   <div class="section"><h3>多米诺默认参数</h3>
     <div class="field"><label>材质</label><select id="materialDefault"><option value="wood">木牌</option><option value="stone">石牌</option><option value="metal">金属牌</option><option value="ice">冰牌</option></select></div>
@@ -72,11 +71,12 @@
 
   <div class="section"><h3>操作</h3><div class="hint">滚轮缩放｜中键/右键/Space+拖动平移<br>Shift+点击 多选｜Alt+滚轮 旋转<br>Ctrl+Z 撤销｜Ctrl+Y 重做｜Ctrl+D 复制｜Delete 删除｜Esc 退出路径工具</div></div>
 
-  <div class="section"><h3>本版修复</h3><div class="hint">根据你的视频继续处理个别飞牌：多米诺接触地板后创建临时底边支点，倒伏过程以旋转为主；接近躺平后逐步软化支点，完全稳定后才释放。同时物理解算提升到最多 120Hz 子步，减少牌角穿透和瞬间弹射。</div></div>
+  <div class="section"><h3>本版新增</h3><div class="hint">新增牌的“重量倍率”和“重力倍率”。重量会真实改变 Matter.js 质量与惯性；重力会单独改变牌受到的向下加速度。与底边支点一起使用，可让牌更有压地感并减少异常飞牌。</div></div>
 </div>
 
-<div id="status" class="panel"><span id="cameraStatus">镜头 100%</span> ｜ 世界地面 Y=650 ｜ V24.4 Pivot Runtime</div>
+<div id="status" class="panel"><span id="cameraStatus">镜头 100%</span> ｜ 世界地面 Y=650 ｜ V24.5 Weight / Gravity Runtime</div>
 <canvas id="c"></canvas>
-<script type="module" src="./src/app/V24App.js?v=24.4-8207dd9"></script>
+<script type="module" src="./src/app/V24App.js?v=24.5-de7d5f6"></script>
+<script type="module" src="./src/app/V24WeightGravityControls.js?v=24.5-0eada0d"></script>
 </body>
 </html>
