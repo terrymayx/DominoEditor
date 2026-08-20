@@ -1,29 +1,18 @@
-<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Domino Editor V2</title><style>
-body{margin:0;background:#202020;overflow:hidden;font-family:Arial}#ui{position:fixed;top:10px;left:10px;color:white;z-index:10}button{padding:7px;margin:2px}canvas{background:linear-gradient(#333 1px,transparent 1px),linear-gradient(90deg,#333 1px,transparent 1px);background-size:40px 40px}
-</style></head><body>
-<div id="ui">
-<button onclick="addDomino()">添加</button><button onclick="copy()">复制</button><button onclick="circle()">圆形生成</button><button onclick="line()">直线生成</button><button onclick="save()">保存</button><button onclick="load()">读取</button><button onclick="clearAll()">清空</button><button onclick="test()">倒牌</button>
-<br>V2: 拖动 | 滚轮旋转 | Delete删除 | Ctrl+D复制
-</div>
-<canvas id="c"></canvas>
-<script>
-const c=document.getElementById('c'),ctx=c.getContext('2d');c.width=innerWidth;c.height=innerHeight;
-let ds=[],sel=null,drag=false;
-class Domino{constructor(x,y){this.x=x;this.y=y;this.a=0;this.f=0;this.target=0}draw(){ctx.save();ctx.translate(this.x,this.y);ctx.rotate(this.a+this.f);ctx.fillStyle=sel===this?'#ffcc00':'#eee';ctx.strokeStyle='#111';ctx.lineWidth=3;ctx.beginPath();ctx.roundRect(-12,-40,24,80,5);ctx.fill();ctx.stroke();ctx.restore()}update(){if(this.f<this.target)this.f+=(this.target-this.f)*0.12}}
-function addDomino(){ds.push(new Domino(300,300));}
-function draw(){ctx.clearRect(0,0,c.width,c.height);ds.forEach(d=>{d.update();d.draw()});requestAnimationFrame(draw)}draw();
-function hit(x,y){for(let i=ds.length-1;i>=0;i--){let d=ds[i];if(Math.hypot(x-d.x,y-d.y)<50)return d}}
-c.onmousedown=e=>{sel=hit(e.clientX,e.clientY);drag=!!sel}
-c.onmousemove=e=>{if(drag&&sel){sel.x=Math.round(e.clientX/20)*20;sel.y=Math.round(e.clientY/20)*20}}
-c.onmouseup=()=>drag=false;
-c.onwheel=e=>{if(sel)sel.a+=e.deltaY>0?.15:-.15}
-document.onkeydown=e=>{if(e.key==='Delete'&&sel){ds.splice(ds.indexOf(sel),1);sel=null}if(e.ctrlKey&&e.key==='d')copy()}
-function copy(){if(sel){let d=new Domino(sel.x+40,sel.y+40);d.a=sel.a;ds.push(d);sel=d}}
-function circle(){for(let i=0;i<20;i++){let a=i*Math.PI*2/20;let d=new Domino(500+Math.cos(a)*200,350+Math.sin(a)*200);d.a=a;ds.push(d)}}
-function line(){for(let i=0;i<20;i++)ds.push(new Domino(200+i*35,500))}
-function save(){localStorage.domino=JSON.stringify(ds.map(d=>({x:d.x,y:d.y,a:d.a})));alert('保存完成')}
-function load(){ds=(JSON.parse(localStorage.domino||'[]')).map(o=>{let d=new Domino(o.x,o.y);d.a=o.a;return d})}
-function clearAll(){ds=[]}
-function test(){ds.forEach((d,i)=>setTimeout(()=>d.target=Math.PI/2,i*80))}
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Domino Editor V3</title><style>body{margin:0;background:#202020;overflow:hidden;font-family:Arial}#ui{position:fixed;top:10px;left:10px;color:white;z-index:9}button{padding:7px;margin:2px}canvas{background:linear-gradient(#333 1px,transparent 1px),linear-gradient(90deg,#333 1px,transparent 1px);background-size:40px 40px}</style></head><body><div id="ui"><button onclick="add()">添加</button><button onclick="gridLine()">阵列</button><button onclick="circle()">圆阵</button><button onclick="save()">保存JSON</button><button onclick="load()">读取</button><button onclick="clearAll()">清空</button><button onclick="run()">模拟</button><br>V3: 框选 | Shift多选 | Ctrl+D复制 | Delete删除 | 滚轮旋转</div><canvas id="c"></canvas><script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');c.width=innerWidth;c.height=innerHeight;let ds=[],selected=[],drag=false,box=null;
+class Domino{constructor(x,y){this.x=x;this.y=y;this.r=0;this.f=0;this.target=0}draw(){ctx.save();ctx.translate(this.x,this.y);ctx.rotate(this.r+this.f);ctx.fillStyle=selected.includes(this)?'#ffcc00':'#eee';ctx.strokeStyle='#111';ctx.beginPath();ctx.roundRect(-12,-40,24,80,5);ctx.fill();ctx.stroke();ctx.restore()}update(){this.f+=(this.target-this.f)*.1}}
+function add(){let d=new Domino(300,300);ds.push(d);selected=[d]}
+function hit(x,y){return ds.find(d=>Math.hypot(x-d.x,y-d.y)<50)}
+c.onmousedown=e=>{let d=hit(e.clientX,e.clientY);if(!e.shiftKey)selected=[];if(d){selected.push(d);drag=true}else box={x:e.clientX,y:e.clientY}}
+c.onmousemove=e=>{if(drag){selected.forEach(d=>{d.x=Math.round(e.clientX/20)*20;d.y=Math.round(e.clientY/20)*20})}}
+c.onmouseup=e=>{drag=false;if(box){let x=Math.min(box.x,e.clientX),y=Math.min(box.y,e.clientY),w=Math.abs(e.clientX-box.x),h=Math.abs(e.clientY-box.y);selected=ds.filter(d=>d.x>x&&d.x<x+w&&d.y>y&&d.y<y+h);box=null}}
+c.onwheel=e=>selected.forEach(d=>d.r+=e.deltaY>0?.15:-.15);
+document.onkeydown=e=>{if(e.key==='Delete'){ds=ds.filter(d=>!selected.includes(d));selected=[]}if(e.ctrlKey&&e.key==='d'){selected.forEach(d=>{let n=new Domino(d.x+40,d.y+40);n.r=d.r;ds.push(n)})}}
+function gridLine(){for(let i=0;i<30;i++)ds.push(new Domino(200+i*35,500))}
+function circle(){for(let i=0;i<30;i++){let a=i*Math.PI*2/30;let d=new Domino(600+Math.cos(a)*220,350+Math.sin(a)*220);d.r=a;ds.push(d)}}
+function save(){localStorage.level=JSON.stringify(ds.map(d=>({x:d.x,y:d.y,r:d.r})));alert('JSON保存完成')}
+function load(){ds=(JSON.parse(localStorage.level||'[]')).map(o=>{let d=new Domino(o.x,o.y);d.r=o.r;return d})}
+function clearAll(){ds=[];selected=[]}
+function run(){ds.forEach((d,i)=>setTimeout(()=>d.target=Math.PI/2,i*80))}
+function loop(){ctx.clearRect(0,0,c.width,c.height);ds.forEach(d=>{d.update();d.draw()});requestAnimationFrame(loop)}loop();
 </script></body></html>
