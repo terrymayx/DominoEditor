@@ -1,26 +1,26 @@
-// DominoEditor V24 Domino Physics Core
-// Shared material parameters and light-weight state helpers for Matter.js integration.
+// DominoEditor V24.2 Domino Physics Core
+// Stable tabletop material presets: stronger ground grip, lower rebound, controlled fall energy.
 
 export const DominoMaterials = {
   wood: {
-    label: '木牌', mass: 1.0, density: 0.0018,
-    friction: 0.34, frictionStatic: 0.5, restitution: 0.015,
-    sensitivity: 1.18, impact: 1.12, fallSpeed: 1.0
+    label: '木牌', mass: 1.0, density: 0.0022,
+    friction: 0.62, frictionStatic: 0.88, restitution: 0.002,
+    frictionAir: 0.006, sensitivity: 1.05, impact: 1.0, fallSpeed: 0.94
   },
   stone: {
-    label: '石牌', mass: 2.4, density: 0.0038,
-    friction: 0.48, frictionStatic: 0.62, restitution: 0.008,
-    sensitivity: 0.78, impact: 1.2, fallSpeed: 0.72
+    label: '石牌', mass: 2.0, density: 0.0042,
+    friction: 0.72, frictionStatic: 0.95, restitution: 0.001,
+    frictionAir: 0.008, sensitivity: 0.76, impact: 1.08, fallSpeed: 0.72
   },
   metal: {
-    label: '金属牌', mass: 1.8, density: 0.0029,
-    friction: 0.28, frictionStatic: 0.42, restitution: 0.035,
-    sensitivity: 0.96, impact: 1.4, fallSpeed: 1.08
+    label: '金属牌', mass: 1.55, density: 0.0032,
+    friction: 0.50, frictionStatic: 0.72, restitution: 0.008,
+    frictionAir: 0.006, sensitivity: 0.90, impact: 1.12, fallSpeed: 0.96
   },
   ice: {
-    label: '冰牌', mass: 0.82, density: 0.00145,
-    friction: 0.055, frictionStatic: 0.12, restitution: 0.02,
-    sensitivity: 1.28, impact: 0.95, fallSpeed: 1.2
+    label: '冰牌', mass: 0.9, density: 0.0018,
+    friction: 0.07, frictionStatic: 0.12, restitution: 0.004,
+    frictionAir: 0.004, sensitivity: 1.12, impact: 0.90, fallSpeed: 1.05
   }
 };
 
@@ -41,6 +41,7 @@ export class DominoPhysicsCore {
     const mat = DominoMaterials[this.material] || DominoMaterials.wood;
     this.hitPower = Math.max(this.hitPower, Math.abs(force) * Math.max(0.2, offset));
     this.angularVelocity += direction * this.hitPower * mat.sensitivity / Math.max(this.mass, 0.001);
+    this.angularVelocity = Math.max(-2.2, Math.min(2.2, this.angularVelocity));
     this.state = 'tilting';
   }
 
@@ -48,9 +49,10 @@ export class DominoPhysicsCore {
     if (this.state === 'standing' || this.state === 'fallen') return;
     const mat = DominoMaterials[this.material] || DominoMaterials.wood;
     const sign = Math.sign(this.angularVelocity || this.angle || 1);
-    const gravityBias = Math.sin(Math.min(Math.PI / 2, Math.abs(this.angle))) * 4.2 * mat.fallSpeed;
+    const gravityBias = Math.sin(Math.min(Math.PI / 2, Math.abs(this.angle))) * 3.6 * mat.fallSpeed;
     this.angularVelocity += sign * gravityBias * dt;
-    this.angularVelocity *= Math.pow(0.992, dt * 60);
+    this.angularVelocity *= Math.pow(0.988, dt * 60);
+    this.angularVelocity = Math.max(-2.2, Math.min(2.2, this.angularVelocity));
     this.angle += this.angularVelocity * dt;
     if (Math.abs(this.angle) > 0.16) this.state = 'falling';
     if (Math.abs(this.angle) >= Math.PI / 2) {
