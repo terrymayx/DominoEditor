@@ -1,7 +1,12 @@
-// DominoEditor V24.4 Matter.js Domino Adapter
-// Ground-pivot toppling: dominoes rotate around a temporary lower-edge tether instead of launching.
+// DominoEditor V24.5 Matter.js Domino Adapter
+// Ground-pivot toppling + per-domino weight and gravity multipliers.
 
-import { DominoMaterials } from './DominoPhysicsCore.js?v=24.3';
+import { DominoMaterials } from './DominoPhysicsCore.js?v=24.5';
+
+function clampNumber(value, min, max, fallback = 1) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
 
 export class DominoMatterAdapter {
   constructor(Matter, engine, options = {}) {
@@ -34,14 +39,23 @@ export class DominoMatterAdapter {
     for (const body of this.dominoes.values()) this._removePivot(body);
   }
 
+  _scales(entity) {
+    const defaults = globalThis.DominoPhysicsDefaults || {};
+    return {
+      weightScale: clampNumber(entity?.weightScale ?? defaults.weightScale ?? 1, 0.25, 5, 1),
+      gravityScale: clampNumber(entity?.gravityScale ?? defaults.gravityScale ?? 1, 0.25, 3, 1)
+    };
+  }
+
   createBody(entity) {
     const material = DominoMaterials[entity.material || 'wood'] || DominoMaterials.wood;
     const w = entity.w ?? entity.width ?? 20;
     const h = entity.h ?? entity.height ?? 96;
     const initialAngle = (entity.r ?? entity.rotation ?? 0) * Math.PI / 180;
+    const scales = this._scales(entity);
     const body = this.M.Bodies.rectangle(entity.x, entity.y, w, h, {
       angle: initialAngle,
-      density: material.density ?? 0.0025,
+      density: (material.density ?? 0.0025) * scales.weightScale,
       friction: Math.max(material.friction ?? 0.78, 0.74),
       frictionStatic: Math.max(material.frictionStatic ?? 0.98, 0.92),
       frictionAir: material.frictionAir ?? 0.01,
@@ -50,12 +64,12 @@ export class DominoMatterAdapter {
       label: `domino:${entity.id}`
     });
 
-    // Slightly larger rotational inertia makes the collision solver less prone to
-    // converting a fast corner impact into an explosive angular impulse.
+    // Density now carries the user's weight multiplier. Keep a moderate extra
+    // inertia scale so a heavy tile feels planted instead of becoming a spinner.
     this.M.Body.setInertia(body, body.inertia * (material.inertiaScale ?? 1.48));
 
     body.plugin = body.plugin || {};
-    body.plugin.domino = this._makeMeta(entity, material, w, h, initialAngle);
+    body.plugin.domino = this._makeMeta(entity, material, w, h, initialAngle, scales);
     this.dominoes.set(entity.id, body);
     return body;
   }
@@ -64,13 +78,17 @@ export class DominoMatterAdapter {
     if (!entity?.id || !body) return;
     const material = DominoMaterials[entity.material || 'wood'] || DominoMaterials.wood;
     const initialAngle = (entity.r ?? entity.rotation ?? 0) * Math.PI / 180;
+    const scales = this._scales(entity);
+
+    this.M.Body.setDensity(body, (material.density ?? 0.0025) * scales.weightScale);
     body.plugin = body.plugin || {};
     body.plugin.domino = this._makeMeta(
       entity,
       material,
       entity.w ?? entity.width ?? 20,
       entity.h ?? entity.height ?? 96,
-      initialAngle
+      initialAngle,
+      scales
     );
     body.friction = Math.max(material.friction ?? 0.78, 0.74);
     body.frictionStatic = Math.max(material.frictionStatic ?? 0.98, 0.92);
@@ -80,7 +98,7 @@ export class DominoMatterAdapter {
     this.dominoes.set(entity.id, body);
   }
 
-  _makeMeta(entity, material, w, h, initialAngle) {
+  _makeMeta(entity, material, w, h, initialAngle, scales = this._scales(entity)) {
     return {
       id: entity.id,
       material: entity.material || 'wood',
@@ -88,6 +106,8 @@ export class DominoMatterAdapter {
       width: w,
       sensitivity: entity.sensitivity ?? material.sensitivity ?? 1,
       impactMultiplier: entity.impactMultiplier ?? material.impact ?? 1,
+      weightScale: scales.weightScale,
+      gravityScale: scales.gravityScale,
       baseFrictionAir: material.frictionAir ?? 0.01,
       groundedSlide: material.groundedSlide ?? 0.72,
       initialAngle,
@@ -129,8 +149,6 @@ export class DominoMatterAdapter {
       meta.lastSupportAt = now;
 
       const tilt = Math.abs(this._angleDelta(domino.angle, meta.initialAngle));
-      // Only create the pivot for a standing / normally tipping domino. A domino
-      // dropped already-flat from the air should remain a normal free rigid body.
       if (tilt < 0.78 && Math.abs(domino.velocity.y) < 1.6) {
         this._ensurePivot(domino);
       }
@@ -141,7 +159,6 @@ export class DominoMatterAdapter {
   }
 
   _bottomLocal(meta) {
-    // Slightly inside the geometry avoids constraint jitter directly on the corner.
     return { x: 0, y: meta.height * 0.47 };
   }
 
@@ -195,14 +212,10 @@ export class DominoMatterAdapter {
       const recentlyGrounded = grounded || now - meta.lastSupportAt < 180;
       const hasPivot = !!meta.pivotConstraint;
 
-      // If contact flickers for a frame, recreate the lower-edge tether before a
-      // domino collision can turn that single unsupported frame into a launch.
       if (!hasPivot && recentlyGrounded && !meta.fallen && abs < 0.82) {
         this._ensurePivot(body);
       }
 
-      // Chain assistance is rotation-only. The lower-edge pivot supplies the
-      // support reaction that a real tabletop would supply.
       if (
         meta.armed &&
         now - meta.lastImpactAt < 1150 &&
@@ -210,9 +223,10 @@ export class DominoMatterAdapter {
         Math.abs(body.angularVelocity) < 0.022
       ) {
         const sign = Math.sign(tilt || body.angularVelocity || 1);
+        const weightResistance = Math.sqrt(meta.weightScale || 1);
         this.M.Body.setAngularVelocity(
           body,
-          body.angularVelocity + sign * 0.0015 * (meta.sensitivity || 1)
+          body.angularVelocity + sign * 0.0015 * (meta.sensitivity || 1) / weightResistance
         );
       }
 
@@ -227,16 +241,10 @@ export class DominoMatterAdapter {
       let vy = body.velocity.y;
 
       if (meta.pivotConstraint) {
-        // A pivoted domino's center of mass should not receive an upward launch.
-        // It is allowed to move downward as it rotates around the lower edge.
         if (vy < 0) vy = 0;
-
-        // While upright or tipping, almost all motion should be angular.
         const maxX = abs < 1.15 ? this.maxGroundedHorizontalSpeed : 0.46;
         vx = Math.max(-maxX, Math.min(maxX, vx));
 
-        // As the domino gets close to flat, soften the tether instead of suddenly
-        // releasing it. This prevents a stored constraint impulse from firing it away.
         if (abs > 1.30) {
           meta.pivotConstraint.stiffness = 0.72;
           meta.pivotConstraint.damping = 0.48;
@@ -266,7 +274,6 @@ export class DominoMatterAdapter {
       }
 
       if (meta.fallen) {
-        // Flat domino = large contact patch. Bleed translational energy quickly.
         if (grounded || recentlyGrounded || meta.pivotConstraint) {
           vx *= 0.80;
           if (Math.abs(vx) < 0.025) vx = 0;
@@ -274,8 +281,6 @@ export class DominoMatterAdapter {
           if (Math.abs(body.angularVelocity) < 0.014) this.M.Body.setAngularVelocity(body, 0);
         }
 
-        // Release only after the tile is already nearly flat and calm. The tether
-        // therefore cannot act like a stretched spring at the instant of impact.
         const speed = Math.hypot(vx, vy);
         if (
           meta.pivotConstraint &&
@@ -314,7 +319,8 @@ export class DominoMatterAdapter {
 
     const horizontal = Math.sign(domino.position.x - other.position.x) || Math.sign(rvx) || 1;
     const impact = Math.min(2.0, effectiveSpeed) * (meta.impactMultiplier || 1) * (meta.sensitivity || 1);
-    const targetOmega = Math.min(0.052, Math.max(0.023, 0.019 + impact * 0.008));
+    const weightResistance = Math.sqrt(meta.weightScale || 1);
+    const targetOmega = Math.min(0.052, Math.max(0.018, (0.019 + impact * 0.008) / weightResistance));
 
     meta.armed = true;
     meta.lastImpactAt = now;
@@ -323,9 +329,6 @@ export class DominoMatterAdapter {
     if (tilt < 0.36 && Math.abs(domino.angularVelocity) < targetOmega) {
       this.M.Body.setAngularVelocity(domino, horizontal * targetOmega);
     }
-
-    // Intentionally no Body.applyForce here. Matter handles the real collision;
-    // the helper contributes only a bounded angular trigger.
   }
 
   _stabilizeBeforeUpdate() {
@@ -348,8 +351,6 @@ export class DominoMatterAdapter {
         meta.lastImpactAt = now;
       }
 
-      // The old editor button applies a large top-point force. For a grounded tile,
-      // convert that request into a pure rotational nudge and discard linear launch energy.
       if (recentlyGrounded && tilt < 0.70 && forceMag > body.mass * 0.00008) {
         this._ensurePivot(body);
         const direction = Math.sign(body.force.x || body.angularVelocity || 1);
@@ -357,7 +358,7 @@ export class DominoMatterAdapter {
         if (body.force.y < 0) body.force.y = 0;
         body.torque = 0;
         if (Math.abs(body.angularVelocity) < 0.040) {
-          this.M.Body.setAngularVelocity(body, direction * 0.034);
+          this.M.Body.setAngularVelocity(body, direction * 0.034 / Math.sqrt(meta.weightScale || 1));
         }
       } else {
         const maxForce = Math.max(0.00001, body.mass * 0.00022);
@@ -375,6 +376,17 @@ export class DominoMatterAdapter {
 
       if (tilt < 0.22 && Math.abs(body.angularVelocity) > 0.052) {
         this.M.Body.setAngularVelocity(body, Math.sign(body.angularVelocity) * 0.052);
+      }
+
+      // Matter.js applies normal world gravity after the beforeUpdate event.
+      // Add only the delta here, so gravityScale=1 is unchanged, >1 is heavier
+      // downward acceleration, and <1 reduces the effective gravity on this tile.
+      const gravity = this.engine.gravity || { x: 0, y: 1, scale: 0.001 };
+      const extraGravity = (meta.gravityScale || 1) - 1;
+      if (Math.abs(extraGravity) > 1e-6) {
+        const scale = gravity.scale ?? 0.001;
+        body.force.x += body.mass * (gravity.x || 0) * scale * extraGravity;
+        body.force.y += body.mass * (gravity.y || 0) * scale * extraGravity;
       }
     }
   }
