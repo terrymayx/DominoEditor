@@ -1,12 +1,16 @@
-<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Domino Editor V7 Physics</title><script src='https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js'></script><style>body{margin:0;background:#222;color:white;font-family:Arial;overflow:hidden}#ui{position:fixed;top:10px;left:10px;z-index:10;background:#333;padding:10px;border-radius:8px}button{padding:8px;margin:3px}canvas{display:block}</style></head><body><div id='ui'><button onclick='addRamp()'>添加斜坡</button><button onclick='addBall()'>添加球</button><button onclick='start()'>开始物理</button><button onclick='clearAll()'>清空</button><br>V7 球体滚动增强<br>坡度加速 / 摩擦 / 重力分解</div><canvas id='c'></canvas><script>
-const {Engine,Render,Runner,Bodies,Composite,Body,Vector}=Matter;
-const canvas=document.getElementById('c');canvas.width=innerWidth;canvas.height=innerHeight;
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Domino Editor V8</title><script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script><style>body{margin:0;background:#202020;color:white;font-family:Arial;overflow:hidden}#ui{position:fixed;top:10px;left:10px;background:#333;padding:12px;border-radius:8px;z-index:10}button{padding:8px;margin:3px}canvas{display:block}</style></head><body><div id="ui"><button onclick="addRamp()">斜坡</button><button onclick="addBall()">球</button><button onclick="addDomino()">多米诺</button><button onclick="start()">开始</button><button onclick="clearAll()">清空</button><br>V8: 球滚坡 → 撞击 → 多米诺</div><canvas id="c"></canvas><script>
+const {Engine,Render,Runner,Bodies,Composite,Body}=Matter;
+const c=document.getElementById('c');c.width=innerWidth;c.height=innerHeight;
 const engine=Engine.create();engine.gravity.y=1;
-const render=Render.create({canvas,engine,options:{width:innerWidth,height:innerHeight,wireframes:false,background:'#222'}});Render.run(render);Runner.run(Runner.create(),engine);
-let objs=[];let running=false;
-Composite.add(engine.world,Bodies.rectangle(innerWidth/2,innerHeight-30,innerWidth,60,{isStatic:true}));
-function addRamp(){let ramp=Bodies.rectangle(450,450,300,20,{isStatic:true,angle:-25*Math.PI/180,friction:0.9});objs.push(ramp);Composite.add(engine.world,ramp)}
-function addBall(){let ball=Bodies.circle(300,250,25,{density:.004,friction:.05,restitution:.05,frictionAir:.001});ball.plugin={rolling:true};objs.push(ball);Composite.add(engine.world,ball)}
-function start(){running=true;let balls=objs.filter(o=>o.plugin&&o.plugin.rolling);setInterval(()=>{if(!running)return;balls.forEach(b=>{let angle=b.angle;let slopeForce=.0008;Body.applyForce(b,b.position,{x:slopeForce*Math.sin(angle),y:slopeForce*Math.cos(angle)})})},16)}
-function clearAll(){objs.forEach(o=>Composite.remove(engine.world,o));objs=[]}
+const render=Render.create({canvas:c,engine,options:{width:innerWidth,height:innerHeight,wireframes:false,background:'#202020'}});Render.run(render);Runner.run(Runner.create(),engine);
+let objs=[];let balls=[];let dominos=[];
+Composite.add(engine.world,Bodies.rectangle(innerWidth/2,innerHeight-30,innerWidth,60,{isStatic:true,friction:1}));
+function addRamp(){let r=Bodies.rectangle(450,430,350,20,{isStatic:true,angle:-25*Math.PI/180,friction:0.5});r.plugin={type:'ramp'};objs.push(r);Composite.add(engine.world,r)}
+function addBall(){let b=Bodies.circle(280,220,25,{density:.008,friction:.015,frictionAir:.0005,restitution:.05});b.plugin={type:'ball'};balls.push(b);objs.push(b);Composite.add(engine.world,b)}
+function addDomino(){let d=Bodies.rectangle(650+dominos.length*35,380,20,100,{density:.003,friction:.7,restitution:.02});d.plugin={type:'domino'};dominos.push(d);objs.push(d);Composite.add(engine.world,d)}
+function slopeAssist(){balls.forEach(b=>{let vx=b.velocity.x;let vy=b.velocity.y;if(Math.abs(vx)+Math.abs(vy)>0.01){Body.applyForce(b,b.position,{x:vx*0.0005,y:0})}})}
+function checkHit(){balls.forEach(b=>{dominos.forEach(d=>{let dx=b.position.x-d.position.x;let dy=b.position.y-d.position.y;if(Math.sqrt(dx*dx+dy*dy)<80){Body.applyForce(d,d.position,{x:.03,y:0})}})})}
+setInterval(()=>{slopeAssist();checkHit()},16);
+function start(){if(balls[0])Body.applyForce(balls[0],balls[0].position,{x:.02,y:0})}
+function clearAll(){objs.forEach(o=>Composite.remove(engine.world,o));objs=[];balls=[];dominos=[]}
 </script></body></html>
