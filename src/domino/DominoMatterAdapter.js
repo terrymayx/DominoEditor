@@ -15,8 +15,8 @@ export class DominoMatterAdapter {
     // so stale app code cannot launch a domino across the scene.
     this.assistScale = Math.min(options.assistScale ?? 0.00012, 0.00018);
     this.maxAssist = Math.min(options.maxAssist ?? 0.00055, 0.0007);
-    this.maxExternalForcePerMass = options.maxExternalForcePerMass ?? 0.00125;
-    this.maxAngularVelocity = options.maxAngularVelocity ?? 0.19;
+    this.maxExternalForcePerMass = options.maxExternalForcePerMass ?? 0.00075;
+    this.maxAngularVelocity = options.maxAngularVelocity ?? 0.16;
     this.maxHorizontalSpeed = options.maxHorizontalSpeed ?? 4.2;
     this.maxUpwardSpeed = options.maxUpwardSpeed ?? 1.2;
 
@@ -111,8 +111,8 @@ export class DominoMatterAdapter {
       const tilt = this._angleDelta(body.angle, meta.initialAngle);
       const abs = Math.abs(tilt);
 
-      // Only help a domino after a real dynamic-body impact. Assistance is now
-      // angular-first and very small, so it rotates instead of translating/flying.
+      // Only help a domino after a real dynamic-body impact or the explicit editor push.
+      // Assistance is angular-first and very small, so it rotates instead of translating/flying.
       if (
         meta.armed &&
         now - meta.lastImpactAt < 1400 &&
@@ -210,16 +210,25 @@ export class DominoMatterAdapter {
   }
 
   _stabilizeExternalForces() {
+    const now = this.engine.timing?.timestamp ?? 0;
     for (const body of this.dominoes.values()) {
       const meta = body.plugin?.domino;
       if (!meta) continue;
 
-      // Clamp queued external forces such as the editor's "push first" command.
-      // Collision impulses are solved separately by Matter.js and are not erased.
-      const maxForce = Math.max(0.00001, body.mass * this.maxExternalForcePerMass);
       const fx = body.force?.x || 0;
       const fy = body.force?.y || 0;
       const mag = Math.hypot(fx, fy);
+      const rawTorque = body.torque || 0;
+
+      // Treat an explicit editor/other-system push as a real hit, but make it gentle.
+      // This fixes the old push button's huge force/0.11 angular velocity without
+      // needing old app code to know about the new physics limits.
+      if (!meta.armed && (mag > body.mass * 0.00015 || Math.abs(rawTorque) > body.mass * 0.004 || Math.abs(body.angularVelocity) > 0.04)) {
+        meta.armed = true;
+        meta.lastImpactAt = now;
+      }
+
+      const maxForce = Math.max(0.00001, body.mass * this.maxExternalForcePerMass);
       if (mag > maxForce) {
         const s = maxForce / mag;
         body.force.x *= s;
@@ -228,9 +237,16 @@ export class DominoMatterAdapter {
 
       // Body.applyForce at the top also queues torque. Keep that torque in the
       // range of a hand push rather than a catapult impulse.
-      const maxTorque = Math.max(0.0001, body.mass * 0.026);
+      const maxTorque = Math.max(0.0001, body.mass * 0.018);
       if (Math.abs(body.torque || 0) > maxTorque) {
         body.torque = Math.sign(body.torque) * maxTorque;
+      }
+
+      // The legacy editor push sets angular velocity directly. Limit the first
+      // upright kick to a realistic value, then let gravity do the rest.
+      const tilt = Math.abs(this._angleDelta(body.angle, meta.initialAngle));
+      if (tilt < 0.18 && Math.abs(body.angularVelocity) > 0.065) {
+        this.M.Body.setAngularVelocity(body, Math.sign(body.angularVelocity) * 0.065);
       }
     }
   }
