@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Domino Editor</title><style>body{margin:0;background:#222;overflow:hidden;font-family:Arial}#ui{position:fixed;top:10px;left:10px;color:white;z-index:2}button{padding:8px;margin:3px}canvas{background:linear-gradient(#333 1px,transparent 1px),linear-gradient(90deg,#333 1px,transparent 1px);background-size:40px 40px}</style></head><body><div id="ui"><button onclick="addDomino()">添加多米诺</button><button onclick="save()">保存</button><button onclick="load()">读取</button><button onclick="clearAll()">清空</button><button onclick="fall()">测试倒牌</button></div><canvas id="c"></canvas><script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');c.width=innerWidth;c.height=innerHeight;let ds=[],sel=null,drag=false;
+class Domino{constructor(x,y){this.x=x;this.y=y;this.a=0;this.f=0}draw(){ctx.save();ctx.translate(this.x,this.y);ctx.rotate(this.a+this.f);ctx.fillStyle='#eee';ctx.strokeStyle='#111';ctx.lineWidth=3;ctx.beginPath();ctx.roundRect(-12,-40,24,80,5);ctx.fill();ctx.stroke();ctx.restore()}update(){if(this.f<this.fallTo)this.f+=.05}}
+function addDomino(){ds.push(new Domino(300,300))}
+function loop(){ctx.clearRect(0,0,c.width,c.height);ds.forEach(d=>{d.update();d.draw()});requestAnimationFrame(loop)}loop();
+c.onmousedown=e=>{ds.forEach(d=>{if(Math.abs(e.x-d.x)<30&&Math.abs(e.y-d.y)<60){sel=d;drag=true}})};c.onmousemove=e=>{if(sel&&drag){sel.x=Math.round(e.x/20)*20;sel.y=Math.round(e.y/20)*20}};c.onmouseup=()=>{drag=false;sel=null};c.onwheel=e=>{if(sel)sel.a+=e.deltaY>0?.2:-.2};
+document.onkeydown=e=>{if(e.key==='Delete'&&sel){ds.splice(ds.indexOf(sel),1);sel=null}}
+function save(){localStorage.domino=JSON.stringify(ds.map(d=>({x:d.x,y:d.y,a:d.a})));alert('saved')}
+function load(){ds=(JSON.parse(localStorage.domino||'[]')).map(d=>{let n=new Domino(d.x,d.y);n.a=d.a;return n})}
+function clearAll(){ds=[]}function fall(){if(ds[0]){ds.forEach((d,i)=>setTimeout(()=>d.fallTo=Math.PI/2,i*100))}}
+</script></body></html>
