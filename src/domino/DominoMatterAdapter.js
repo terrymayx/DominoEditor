@@ -1,5 +1,5 @@
-// DominoEditor V24.3 Matter.js Domino Adapter
-// Grounded domino dynamics: angular-only chain assistance, support tracking, no catapult impulses.
+// DominoEditor V24.4 Matter.js Domino Adapter
+// Ground-pivot toppling: dominoes rotate around a temporary lower-edge tether instead of launching.
 
 import { DominoMaterials } from './DominoPhysicsCore.js?v=24.3';
 
@@ -10,10 +10,10 @@ export class DominoMatterAdapter {
     this.engine = engine;
     this.dominoes = new Map();
     this.minRelativeSpeed = options.minRelativeSpeed ?? 0.12;
-    this.maxAngularVelocity = options.maxAngularVelocity ?? 0.115;
-    this.maxGroundedHorizontalSpeed = options.maxGroundedHorizontalSpeed ?? 1.45;
-    this.maxAirHorizontalSpeed = options.maxAirHorizontalSpeed ?? 2.8;
-    this.maxRecentSupportUpwardSpeed = options.maxRecentSupportUpwardSpeed ?? 0.18;
+    this.maxAngularVelocity = options.maxAngularVelocity ?? 0.105;
+    this.maxGroundedHorizontalSpeed = options.maxGroundedHorizontalSpeed ?? 0.72;
+    this.maxAirHorizontalSpeed = options.maxAirHorizontalSpeed ?? 2.2;
+    this.pivotReleaseDelay = options.pivotReleaseDelay ?? 320;
 
     this._collisionStart = e => this.onCollisionStart(e.pairs || []);
     this._collisionEnd = e => this.onCollisionEnd(e.pairs || []);
@@ -31,6 +31,7 @@ export class DominoMatterAdapter {
     this.M.Events.off(this.engine, 'collisionStart', this._collisionStart);
     this.M.Events.off(this.engine, 'collisionEnd', this._collisionEnd);
     this.M.Events.off(this.engine, 'beforeUpdate', this._beforeUpdate);
+    for (const body of this.dominoes.values()) this._removePivot(body);
   }
 
   createBody(entity) {
@@ -41,15 +42,17 @@ export class DominoMatterAdapter {
     const body = this.M.Bodies.rectangle(entity.x, entity.y, w, h, {
       angle: initialAngle,
       density: material.density ?? 0.0025,
-      friction: material.friction ?? 0.78,
-      frictionStatic: material.frictionStatic ?? 0.98,
+      friction: Math.max(material.friction ?? 0.78, 0.74),
+      frictionStatic: Math.max(material.frictionStatic ?? 0.98, 0.92),
       frictionAir: material.frictionAir ?? 0.01,
-      restitution: material.restitution ?? 0,
-      slop: 0.012,
+      restitution: 0,
+      slop: 0.01,
       label: `domino:${entity.id}`
     });
 
-    this.M.Body.setInertia(body, body.inertia * (material.inertiaScale ?? 1.35));
+    // Slightly larger rotational inertia makes the collision solver less prone to
+    // converting a fast corner impact into an explosive angular impulse.
+    this.M.Body.setInertia(body, body.inertia * (material.inertiaScale ?? 1.48));
 
     body.plugin = body.plugin || {};
     body.plugin.domino = this._makeMeta(entity, material, w, h, initialAngle);
@@ -69,11 +72,11 @@ export class DominoMatterAdapter {
       entity.h ?? entity.height ?? 96,
       initialAngle
     );
-    body.friction = material.friction ?? 0.78;
-    body.frictionStatic = material.frictionStatic ?? 0.98;
+    body.friction = Math.max(material.friction ?? 0.78, 0.74);
+    body.frictionStatic = Math.max(material.frictionStatic ?? 0.98, 0.92);
     body.frictionAir = material.frictionAir ?? 0.01;
-    body.restitution = material.restitution ?? 0;
-    this.M.Body.setInertia(body, body.inertia * (material.inertiaScale ?? 1.35));
+    body.restitution = 0;
+    this.M.Body.setInertia(body, body.inertia * (material.inertiaScale ?? 1.48));
     this.dominoes.set(entity.id, body);
   }
 
@@ -86,13 +89,16 @@ export class DominoMatterAdapter {
       sensitivity: entity.sensitivity ?? material.sensitivity ?? 1,
       impactMultiplier: entity.impactMultiplier ?? material.impact ?? 1,
       baseFrictionAir: material.frictionAir ?? 0.01,
-      groundedSlide: material.groundedSlide ?? 0.8,
+      groundedSlide: material.groundedSlide ?? 0.72,
       initialAngle,
       fallen: false,
+      fallenAt: Infinity,
       armed: false,
       lastImpactAt: -Infinity,
       lastSupportAt: -Infinity,
-      supportIds: new Set()
+      supportIds: new Set(),
+      pivotConstraint: null,
+      pivotAnchor: null
     };
   }
 
@@ -101,8 +107,8 @@ export class DominoMatterAdapter {
     for (const pair of pairs) {
       this._trackSupport(pair.bodyA, pair.bodyB, true, now);
       this._trackSupport(pair.bodyB, pair.bodyA, true, now);
-      this._handleDominoCollision(pair.bodyA, pair.bodyB, pair);
-      this._handleDominoCollision(pair.bodyB, pair.bodyA, pair);
+      this._handleDominoCollision(pair.bodyA, pair.bodyB);
+      this._handleDominoCollision(pair.bodyB, pair.bodyA);
     }
   }
 
@@ -117,13 +123,68 @@ export class DominoMatterAdapter {
   _trackSupport(domino, other, entering, now) {
     const meta = domino?.plugin?.domino;
     if (!meta || !other || !other.isStatic || other.isSensor) return;
-    if (entering) meta.supportIds.add(other.id);
-    else meta.supportIds.delete(other.id);
-    meta.lastSupportAt = now;
+
+    if (entering) {
+      meta.supportIds.add(other.id);
+      meta.lastSupportAt = now;
+
+      const tilt = Math.abs(this._angleDelta(domino.angle, meta.initialAngle));
+      // Only create the pivot for a standing / normally tipping domino. A domino
+      // dropped already-flat from the air should remain a normal free rigid body.
+      if (tilt < 0.78 && Math.abs(domino.velocity.y) < 1.6) {
+        this._ensurePivot(domino);
+      }
+    } else {
+      meta.supportIds.delete(other.id);
+      meta.lastSupportAt = now;
+    }
+  }
+
+  _bottomLocal(meta) {
+    // Slightly inside the geometry avoids constraint jitter directly on the corner.
+    return { x: 0, y: meta.height * 0.47 };
+  }
+
+  _worldPoint(body, local) {
+    const c = Math.cos(body.angle), s = Math.sin(body.angle);
+    return {
+      x: body.position.x + local.x * c - local.y * s,
+      y: body.position.y + local.x * s + local.y * c
+    };
+  }
+
+  _ensurePivot(body) {
+    const meta = body?.plugin?.domino;
+    if (!meta || meta.pivotConstraint || meta.fallen) return;
+
+    const pointB = this._bottomLocal(meta);
+    const anchor = this._worldPoint(body, pointB);
+    const constraint = this.M.Constraint.create({
+      pointA: { x: anchor.x, y: anchor.y },
+      bodyB: body,
+      pointB,
+      length: 0,
+      stiffness: 0.94,
+      damping: 0.34,
+      angularStiffness: 0
+    });
+
+    meta.pivotAnchor = anchor;
+    meta.pivotConstraint = constraint;
+    this.M.Composite.add(this.engine.world, constraint);
+  }
+
+  _removePivot(body) {
+    const meta = body?.plugin?.domino;
+    if (!meta?.pivotConstraint) return;
+    this.M.Composite.remove(this.engine.world, meta.pivotConstraint, true);
+    meta.pivotConstraint = null;
+    meta.pivotAnchor = null;
   }
 
   update() {
     const now = this.engine.timing?.timestamp ?? 0;
+
     for (const body of this.dominoes.values()) {
       const meta = body.plugin?.domino;
       if (!meta) continue;
@@ -131,24 +192,30 @@ export class DominoMatterAdapter {
       const tilt = this._angleDelta(body.angle, meta.initialAngle);
       const abs = Math.abs(tilt);
       const grounded = meta.supportIds.size > 0;
-      const recentlyGrounded = grounded || now - meta.lastSupportAt < 140;
+      const recentlyGrounded = grounded || now - meta.lastSupportAt < 180;
+      const hasPivot = !!meta.pivotConstraint;
 
-      // Chain assistance is rotational only. No top-point force is ever injected,
-      // so the helper cannot create sideways or upward launch energy.
+      // If contact flickers for a frame, recreate the lower-edge tether before a
+      // domino collision can turn that single unsupported frame into a launch.
+      if (!hasPivot && recentlyGrounded && !meta.fallen && abs < 0.82) {
+        this._ensurePivot(body);
+      }
+
+      // Chain assistance is rotation-only. The lower-edge pivot supplies the
+      // support reaction that a real tabletop would supply.
       if (
         meta.armed &&
-        now - meta.lastImpactAt < 1200 &&
-        abs > 0.10 && abs < 1.08 &&
-        Math.abs(body.angularVelocity) < 0.024
+        now - meta.lastImpactAt < 1150 &&
+        abs > 0.09 && abs < 1.10 &&
+        Math.abs(body.angularVelocity) < 0.022
       ) {
         const sign = Math.sign(tilt || body.angularVelocity || 1);
         this.M.Body.setAngularVelocity(
           body,
-          body.angularVelocity + sign * 0.0018 * (meta.sensitivity || 1)
+          body.angularVelocity + sign * 0.0015 * (meta.sensitivity || 1)
         );
       }
 
-      // Hard cap rotation before the solver can turn fast corner contact into a launch.
       if (Math.abs(body.angularVelocity) > this.maxAngularVelocity) {
         this.M.Body.setAngularVelocity(
           body,
@@ -159,38 +226,65 @@ export class DominoMatterAdapter {
       let vx = body.velocity.x;
       let vy = body.velocity.y;
 
-      if (grounded) {
-        // A standing/falling tabletop domino should rotate around its lower edge,
-        // not skate. Keep translation small while a support is actually touching it.
-        const maxX = abs < 1.05 ? this.maxGroundedHorizontalSpeed : 0.85;
+      if (meta.pivotConstraint) {
+        // A pivoted domino's center of mass should not receive an upward launch.
+        // It is allowed to move downward as it rotates around the lower edge.
+        if (vy < 0) vy = 0;
+
+        // While upright or tipping, almost all motion should be angular.
+        const maxX = abs < 1.15 ? this.maxGroundedHorizontalSpeed : 0.46;
         vx = Math.max(-maxX, Math.min(maxX, vx));
 
-        // Matter uses +Y downward. Suppress upward solver impulses while supported.
-        if (vy < 0) vy = Math.max(vy, -0.06);
+        // As the domino gets close to flat, soften the tether instead of suddenly
+        // releasing it. This prevents a stored constraint impulse from firing it away.
+        if (abs > 1.30) {
+          meta.pivotConstraint.stiffness = 0.72;
+          meta.pivotConstraint.damping = 0.48;
+        }
+        if (abs > 1.43) {
+          meta.pivotConstraint.stiffness = 0.46;
+          meta.pivotConstraint.damping = 0.60;
+        }
+      } else if (grounded || recentlyGrounded) {
+        const maxX = abs < 1.1 ? 0.95 : 0.62;
+        vx = Math.max(-maxX, Math.min(maxX, vx));
+        if (vy < -0.08) vy = -0.08;
       } else {
         vx = Math.max(-this.maxAirHorizontalSpeed, Math.min(this.maxAirHorizontalSpeed, vx));
-      }
-
-      // Contact manifolds sometimes disappear for one frame exactly when a tile
-      // reaches the floor. Keep a short anti-bounce window so that frame cannot launch it.
-      if (recentlyGrounded && vy < -this.maxRecentSupportUpwardSpeed) {
-        vy = -this.maxRecentSupportUpwardSpeed;
+        if (vy < -0.7) vy = -0.7;
       }
 
       if (abs > 0.92) {
-        body.frictionAir = Math.max(meta.baseFrictionAir || 0.01, grounded ? 0.035 : 0.018);
+        body.frictionAir = Math.max(meta.baseFrictionAir || 0.01, meta.pivotConstraint ? 0.045 : 0.026);
       } else {
         body.frictionAir = meta.baseFrictionAir || 0.01;
       }
 
-      if (abs >= 1.18) {
+      if (abs >= 1.18 && !meta.fallen) {
         meta.fallen = true;
-        if (grounded || recentlyGrounded) {
-          // Large flat contact patch: rapidly dissipate residual slide without freezing.
-          vx *= meta.groundedSlide ?? 0.80;
-          if (Math.abs(vx) < 0.035) vx = 0;
-          if (vy < 0) vy *= 0.18;
-          if (Math.abs(body.angularVelocity) < 0.018) this.M.Body.setAngularVelocity(body, 0);
+        meta.fallenAt = now;
+      }
+
+      if (meta.fallen) {
+        // Flat domino = large contact patch. Bleed translational energy quickly.
+        if (grounded || recentlyGrounded || meta.pivotConstraint) {
+          vx *= 0.80;
+          if (Math.abs(vx) < 0.025) vx = 0;
+          if (vy < 0) vy = 0;
+          if (Math.abs(body.angularVelocity) < 0.014) this.M.Body.setAngularVelocity(body, 0);
+        }
+
+        // Release only after the tile is already nearly flat and calm. The tether
+        // therefore cannot act like a stretched spring at the instant of impact.
+        const speed = Math.hypot(vx, vy);
+        if (
+          meta.pivotConstraint &&
+          now - meta.fallenAt > this.pivotReleaseDelay &&
+          abs > 1.42 &&
+          speed < 0.32 &&
+          Math.abs(body.angularVelocity) < 0.020
+        ) {
+          this._removePivot(body);
         }
       }
 
@@ -208,77 +302,79 @@ export class DominoMatterAdapter {
     const rvy = (other.velocity?.y || 0) - (domino.velocity?.y || 0);
     const otherMeta = other.plugin?.domino;
 
-    // Falling domino tips carry useful angular energy even when center-of-mass
-    // horizontal velocity is small. Convert only that into a gentle angular kick.
     const otherTipSpeed = otherMeta
-      ? Math.abs(other.angularVelocity || 0) * (otherMeta.height || 96) * 0.42
+      ? Math.abs(other.angularVelocity || 0) * (otherMeta.height || 96) * 0.40
       : 0;
-    const effectiveSpeed = Math.max(Math.abs(rvx), otherTipSpeed, Math.hypot(rvx, rvy) * 0.18);
+    const effectiveSpeed = Math.max(Math.abs(rvx), otherTipSpeed, Math.hypot(rvx, rvy) * 0.14);
     if (effectiveSpeed < this.minRelativeSpeed) return;
 
+    const now = this.engine.timing?.timestamp ?? 0;
+    const recentlyGrounded = meta.supportIds.size > 0 || now - meta.lastSupportAt < 180;
+    if (recentlyGrounded) this._ensurePivot(domino);
+
     const horizontal = Math.sign(domino.position.x - other.position.x) || Math.sign(rvx) || 1;
-    const impact = Math.min(2.4, effectiveSpeed) * (meta.impactMultiplier || 1) * (meta.sensitivity || 1);
-    const targetOmega = Math.min(
-      0.060,
-      Math.max(0.026, 0.020 + impact * 0.010)
-    );
+    const impact = Math.min(2.0, effectiveSpeed) * (meta.impactMultiplier || 1) * (meta.sensitivity || 1);
+    const targetOmega = Math.min(0.052, Math.max(0.023, 0.019 + impact * 0.008));
 
     meta.armed = true;
-    meta.lastImpactAt = this.engine.timing?.timestamp ?? 0;
+    meta.lastImpactAt = now;
 
     const tilt = Math.abs(this._angleDelta(domino.angle, meta.initialAngle));
-    if (tilt < 0.34 && Math.abs(domino.angularVelocity) < targetOmega) {
+    if (tilt < 0.36 && Math.abs(domino.angularVelocity) < targetOmega) {
       this.M.Body.setAngularVelocity(domino, horizontal * targetOmega);
     }
 
-    // Do not add linear force here. Real collision impulses remain in Matter.js;
-    // the helper contributes rotation only.
+    // Intentionally no Body.applyForce here. Matter handles the real collision;
+    // the helper contributes only a bounded angular trigger.
   }
 
   _stabilizeBeforeUpdate() {
     const now = this.engine.timing?.timestamp ?? 0;
+
     for (const body of this.dominoes.values()) {
       const meta = body.plugin?.domino;
       if (!meta) continue;
 
       const forceMag = Math.hypot(body.force?.x || 0, body.force?.y || 0);
       const rawTorque = body.torque || 0;
+      const tilt = Math.abs(this._angleDelta(body.angle, meta.initialAngle));
+      const recentlyGrounded = meta.supportIds.size > 0 || now - meta.lastSupportAt < 180;
 
-      // Editor push / external mechanisms may still call Body.applyForce. Convert
-      // oversized external pushes into a small rotational trigger and strip the
-      // catapult-sized force before the physics step.
       if (
         !meta.armed &&
-        (forceMag > body.mass * 0.00008 || Math.abs(rawTorque) > body.mass * 0.002 || Math.abs(body.angularVelocity) > 0.035)
+        (forceMag > body.mass * 0.00006 || Math.abs(rawTorque) > body.mass * 0.0015 || Math.abs(body.angularVelocity) > 0.030)
       ) {
         meta.armed = true;
         meta.lastImpactAt = now;
       }
 
-      const tilt = Math.abs(this._angleDelta(body.angle, meta.initialAngle));
-      if (tilt < 0.28 && forceMag > body.mass * 0.00018) {
+      // The old editor button applies a large top-point force. For a grounded tile,
+      // convert that request into a pure rotational nudge and discard linear launch energy.
+      if (recentlyGrounded && tilt < 0.70 && forceMag > body.mass * 0.00008) {
+        this._ensurePivot(body);
         const direction = Math.sign(body.force.x || body.angularVelocity || 1);
         body.force.x = 0;
         if (body.force.y < 0) body.force.y = 0;
         body.torque = 0;
-        if (Math.abs(body.angularVelocity) < 0.045) {
-          this.M.Body.setAngularVelocity(body, direction * 0.038);
+        if (Math.abs(body.angularVelocity) < 0.040) {
+          this.M.Body.setAngularVelocity(body, direction * 0.034);
         }
       } else {
-        const maxForce = Math.max(0.00001, body.mass * 0.00030);
+        const maxForce = Math.max(0.00001, body.mass * 0.00022);
         if (forceMag > maxForce) {
           const s = maxForce / forceMag;
           body.force.x *= s;
           body.force.y *= s;
         }
-        const maxTorque = Math.max(0.00008, body.mass * 0.010);
+
+        const maxTorque = Math.max(0.00006, body.mass * 0.0075);
         if (Math.abs(body.torque || 0) > maxTorque) {
           body.torque = Math.sign(body.torque) * maxTorque;
         }
       }
 
-      if (tilt < 0.20 && Math.abs(body.angularVelocity) > 0.060) {
-        this.M.Body.setAngularVelocity(body, Math.sign(body.angularVelocity) * 0.060);
+      if (tilt < 0.22 && Math.abs(body.angularVelocity) > 0.052) {
+        this.M.Body.setAngularVelocity(body, Math.sign(body.angularVelocity) * 0.052);
       }
     }
   }
