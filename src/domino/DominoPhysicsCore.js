@@ -1,114 +1,72 @@
-// DominoEditor V20.3 Domino Physics Core
-// Pivot-based domino tipping model. Angle is measured from vertical in radians.
+// DominoEditor V24 Domino Physics Core
+// Shared material parameters and light-weight state helpers for Matter.js integration.
 
 export const DominoMaterials = {
-  wood:  { mass: 1.00, friction: 0.32, restitution: 0.02, impact: 1.10, sensitivity: 1.30, damping: 0.992 },
-  stone: { mass: 3.80, friction: 0.55, restitution: 0.01, impact: 0.82, sensitivity: 0.78, damping: 0.988 },
-  metal: { mass: 2.60, friction: 0.24, restitution: 0.04, impact: 1.42, sensitivity: 1.02, damping: 0.994 },
-  ice:   { mass: 0.72, friction: 0.025, restitution: 0.01, impact: 0.92, sensitivity: 1.48, damping: 0.996 }
+  wood: {
+    label: '木牌', mass: 1.0, density: 0.0018,
+    friction: 0.34, frictionStatic: 0.5, restitution: 0.015,
+    sensitivity: 1.18, impact: 1.12, fallSpeed: 1.0
+  },
+  stone: {
+    label: '石牌', mass: 2.4, density: 0.0038,
+    friction: 0.48, frictionStatic: 0.62, restitution: 0.008,
+    sensitivity: 0.78, impact: 1.2, fallSpeed: 0.72
+  },
+  metal: {
+    label: '金属牌', mass: 1.8, density: 0.0029,
+    friction: 0.28, frictionStatic: 0.42, restitution: 0.035,
+    sensitivity: 0.96, impact: 1.4, fallSpeed: 1.08
+  },
+  ice: {
+    label: '冰牌', mass: 0.82, density: 0.00145,
+    friction: 0.055, frictionStatic: 0.12, restitution: 0.02,
+    sensitivity: 1.28, impact: 0.95, fallSpeed: 1.2
+  }
 };
 
 export class DominoPhysicsCore {
   constructor(options = {}) {
-    this.width = options.width ?? 20;
-    this.height = options.height ?? 96;
     this.material = options.material || 'wood';
-    this.gravity = options.gravity ?? 980; // px/s² for the editor world
+    const mat = DominoMaterials[this.material] || DominoMaterials.wood;
+    this.mass = options.mass ?? mat.mass;
+    this.pivotHeight = options.pivotHeight ?? 48;
     this.state = 'standing';
-    this.angle = options.angle ?? 0;
+    this.angle = options.angle || 0;
     this.angularVelocity = 0;
-    this.lastImpact = 0;
-    this.direction = 0;
-    this.fallen = false;
-    this.applyMaterial(this.material, options);
+    this.hitPower = 0;
   }
 
-  applyMaterial(name = 'wood', overrides = {}) {
-    const m = DominoMaterials[name] || DominoMaterials.wood;
-    this.material = name;
-    this.mass = overrides.mass ?? m.mass;
-    this.friction = overrides.friction ?? m.friction;
-    this.restitution = overrides.restitution ?? m.restitution;
-    this.impactMultiplier = overrides.impactMultiplier ?? m.impact;
-    this.sensitivity = overrides.sensitivity ?? m.sensitivity;
-    this.angularDamping = overrides.angularDamping ?? m.damping;
-    this.tipThreshold = overrides.tipThreshold ?? 0.035; // ~2 degrees: easy to start a fall
-    this.fallLockAngle = overrides.fallLockAngle ?? Math.PI * 0.48;
-    this.minKick = overrides.minKick ?? 0.24;
-  }
-
-  get inertiaAboutBase() {
-    // Rectangle inertia around a bottom pivot using the parallel-axis theorem.
-    return Math.max(1e-6, this.mass * (this.width * this.width + this.height * this.height) / 3);
-  }
-
-  hit(impulse, hitHeight = this.height * 0.72, direction = 1) {
-    if (this.fallen) return false;
-    const sign = Math.sign(direction || impulse || 1) || 1;
-    const lever = Math.max(this.height * 0.18, Math.min(this.height, Math.abs(hitHeight)));
-    const torqueImpulse = Math.abs(impulse) * lever * this.impactMultiplier * this.sensitivity;
-    const deltaOmega = torqueImpulse / this.inertiaAboutBase;
-
-    // Guarantee that a visible hit creates a small but meaningful tip instead of only sliding.
-    this.angularVelocity += sign * Math.max(deltaOmega, this.minKick * this.sensitivity);
-    this.angle += sign * 0.004 * this.sensitivity;
-    this.direction = sign;
-    this.lastImpact = Math.abs(impulse);
+  hit(force, offset = 1, direction = 1) {
+    if (this.state === 'fallen') return;
+    const mat = DominoMaterials[this.material] || DominoMaterials.wood;
+    this.hitPower = Math.max(this.hitPower, Math.abs(force) * Math.max(0.2, offset));
+    this.angularVelocity += direction * this.hitPower * mat.sensitivity / Math.max(this.mass, 0.001);
     this.state = 'tilting';
-    return true;
   }
 
   update(dt) {
-    if (this.fallen || this.state === 'standing') return;
-    const step = Math.max(1 / 300, Math.min(1 / 20, dt || 1 / 60));
-    const sign = Math.sign(this.angle || this.angularVelocity || this.direction || 1);
-
-    // Gravity torque around the lower edge. Once the center of mass moves away
-    // from vertical, gravity accelerates the fall instead of allowing the tile to recover.
-    const com = this.height * 0.5;
-    const gravityTorque = this.mass * this.gravity * com * Math.sin(Math.abs(this.angle));
-    const alpha = gravityTorque / this.inertiaAboutBase;
-
-    if (Math.abs(this.angle) >= this.tipThreshold) {
-      this.state = 'falling';
-      this.angularVelocity += sign * alpha * step;
-    } else if (Math.abs(this.angularVelocity) > 0.02) {
-      this.state = 'tilting';
-      // Maintain a tiny gravity bias while near vertical so a hit does not die out instantly.
-      this.angularVelocity += sign * 0.9 * this.sensitivity * step;
-    }
-
-    this.angularVelocity *= Math.pow(this.angularDamping, step * 60);
-    this.angle += this.angularVelocity * step;
-
-    if (Math.abs(this.angle) >= this.fallLockAngle) {
+    if (this.state === 'standing' || this.state === 'fallen') return;
+    const mat = DominoMaterials[this.material] || DominoMaterials.wood;
+    const sign = Math.sign(this.angularVelocity || this.angle || 1);
+    const gravityBias = Math.sin(Math.min(Math.PI / 2, Math.abs(this.angle))) * 4.2 * mat.fallSpeed;
+    this.angularVelocity += sign * gravityBias * dt;
+    this.angularVelocity *= Math.pow(0.992, dt * 60);
+    this.angle += this.angularVelocity * dt;
+    if (Math.abs(this.angle) > 0.16) this.state = 'falling';
+    if (Math.abs(this.angle) >= Math.PI / 2) {
       this.angle = sign * Math.PI / 2;
-      this.angularVelocity = 0;
       this.state = 'fallen';
-      this.fallen = true;
+      this.angularVelocity = 0;
     }
-  }
-
-  reset(angle = 0) {
-    this.state = 'standing';
-    this.angle = angle;
-    this.angularVelocity = 0;
-    this.lastImpact = 0;
-    this.direction = 0;
-    this.fallen = false;
   }
 
   serialize() {
     return {
       material: this.material,
       mass: this.mass,
-      friction: this.friction,
-      restitution: this.restitution,
-      sensitivity: this.sensitivity,
-      impactMultiplier: this.impactMultiplier,
+      pivotHeight: this.pivotHeight,
       state: this.state,
-      angle: this.angle,
-      fallen: this.fallen
+      angle: this.angle
     };
   }
 }
